@@ -6,6 +6,7 @@ services:
       - "5001:5001"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - TZ=Asia/Seoul
     volumes:
       - ./temp_outputs:/app/temp_outputs
     restart: unless-stopped

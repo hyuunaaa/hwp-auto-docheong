@@ -31,8 +31,15 @@ def update_text_only(root, para_pr_id: str, new_text: str):
             break
 
 
-def update_header_date(root):
-    """헤더 날짜를 오늘 날짜로 변경"""
+def update_header_date_and_title(root, title: str = None):
+    """
+    헤더 날짜를 오늘 날짜로 변경
+    + V2 템플릿의 고정 제목도 동적으로 교체 (날짜 제거)
+    
+    Args:
+        root: XML root element
+        title: 교체할 제목 (None이면 제목 교체 안 함)
+    """
 
     today = datetime.now()
 
@@ -54,17 +61,48 @@ def update_header_date(root):
     # 모든 텍스트 노드 검색
     t_nodes = root.xpath(".//hp:t", namespaces=NS)
 
+    date_updated = False
+    title_updated = False
+
     for t in t_nodes:
         if t.text:
-            match = date_pattern.search(t.text)
-            if match:
-                old_date = t.text
-                t.text = new_date
-                print(f"   🔄 날짜 교체: {old_date} → {new_date}")
-                return True
+            # 날짜 교체
+            if not date_updated:
+                match = date_pattern.search(t.text)
+                if match:
+                    old_date = t.text
+                    t.text = new_date
+                    print(f"   🔄 날짜 교체: {old_date} → {new_date}")
+                    date_updated = True
+            
+            # ✅ V2 템플릿 제목 교체 (날짜 패턴 제거)
+            if title and not title_updated:
+                if "클라우드 운영 관련 삼성SDS 실무회의 결과보고" in t.text:
+                    old_title = t.text
+                    
+                    # ✅ 제목에서 날짜 패턴 제거
+                    # 패턴: (YYYY.MM.DD) 또는 (YY.MM.DD) 또는 공백+날짜
+                    clean_title = re.sub(
+                        r'\s*\(?\d{2,4}\.\d{1,2}\.\d{1,2}\)?',
+                        '',
+                        title
+                    ).strip()
+                    
+                    t.text = clean_title
+                    print(f"   🔄 V2 제목 교체: {old_title} → {clean_title}")
+                    title_updated = True
+            
+            # 둘 다 완료되면 조기 종료
+            if date_updated and (title is None or title_updated):
+                break
 
-    print("⚠️ 헤더 날짜를 찾지 못했습니다.")
-    return False
+    if not date_updated:
+        print("⚠️ 헤더 날짜를 찾지 못했습니다.")
+    
+    if title and not title_updated:
+        print("⚠️ V2 템플릿 제목을 찾지 못했습니다. (기본 템플릿일 수 있음)")
+    
+    return date_updated or title_updated
 
 
 def remove_approval_table_by_id(root):
@@ -152,7 +190,15 @@ def normalize_followup_colon_spacing(root):
     print(f"   ✓ 콜론 주변 공백 정리된 텍스트 노드: {changed_nodes}개\n")
 
 
-def replace_section(root, header_text: str, next_headers: List[str], content_lines: List[str]):
+def has_header(root, header_text: str) -> bool:
+    """문단 중에 header_text 가 포함된 헤더가 있는지 여부"""
+    for p in get_all_paras(root):
+        if header_text in (get_para_text(p) or ""):
+            return True
+    return False
+
+
+def replace_section(root, header_text: str, next_headers: List[str], content_lines: List[str]) -> bool:
     """
     특정 섹션의 내용을 content_lines로 교체.
 
@@ -177,7 +223,7 @@ def replace_section(root, header_text: str, next_headers: List[str], content_lin
 
     if start_idx is None:
         print(f"  ⚠️ 헤더를 찾을 수 없음: '{header_text}'")
-        return
+        return False
 
     end_idx = len(paras)
     for i in range(start_idx + 1, len(paras)):
@@ -203,7 +249,7 @@ def replace_section(root, header_text: str, next_headers: List[str], content_lin
 
     if template_para is None:
         print("  ⚠️ 템플릿 문단 없음")
-        return
+        return False
 
     # 기존 본문 제거
     removed_count = 0
@@ -251,6 +297,7 @@ def replace_section(root, header_text: str, next_headers: List[str], content_lin
         added_count += 1
 
     print(f"  ✓ 추가: {added_count}개 문단\n")
+    return True
 
 
 def process_docheong_report(json_path: str, xml_template: str, xml_output: str):
@@ -269,9 +316,9 @@ def process_docheong_report(json_path: str, xml_template: str, xml_output: str):
     root = tree.getroot()
     print(f"✓ 템플릿 로드: {Path(xml_template).name}\n")
 
-    # 날짜와 승인 테이블 수정
+    # ✅ 날짜와 제목 동시 업데이트 (V2 템플릿 대응)
     print("📝 헤더 수정 중...")
-    date_updated = update_header_date(root)
+    date_updated = update_header_date_and_title(root, title=report.title)
     table_removed = remove_approval_table_by_id(root)
 
     if not date_updated:
@@ -281,7 +328,7 @@ def process_docheong_report(json_path: str, xml_template: str, xml_output: str):
 
     print()
 
-    # 제목 업데이트 (머리글/표지용 제목들)
+    # 제목 업데이트 (머리글/표지용 제목들 - paraPrIDRef 기반)
     update_text_only(root, "43", report.title)
     update_text_only(root, "31", report.title)
     print(f"✓ 제목: '{report.title}'\n")
@@ -290,16 +337,91 @@ def process_docheong_report(json_path: str, xml_template: str, xml_output: str):
     print("섹션 업데이트:")
     print("-" * 60)
 
-    replace_section(root, "□ 개", ["□ 테스트 현황"], report.overview)
-    replace_section(root, "□ 테스트 현황", ["□ 주요이슈"], report.test_status)
-    replace_section(root, "□ 주요이슈", ["□ 향후계획"], report.key_issues)
-    replace_section(root, "□ 향후계획", [], report.followup)
+    # 1) 템플릿에 4개 섹션 헤더가 다 있는지 확인 (기존 템플릿용)
+    has_all_headers = (
+        has_header(root, "□ 개") and
+        has_header(root, "□ 테스트 현황") and
+        has_header(root, "□ 주요이슈") and
+        has_header(root, "□ 향후계획")
+    )
 
-    # 🔹 줄 간격(spacing)은 더 이상 강제로 건드리지 않음
-    #    → HWP가 자동 줄바꿈/줄간격을 다시 계산하게 둠
+    if has_all_headers:
+        # ── 기존 템플릿(docheong_template)용 경로 ──
+        print("→ 정적 4섹션 템플릿 모드로 처리")
+        replace_section(root, "□ 개", ["□ 테스트 현황"], report.overview)
+        replace_section(root, "□ 테스트 현황", ["□ 주요이슈"], report.test_status)
+        replace_section(root, "□ 주요이슈", ["□ 향후계획"], report.key_issues)
+        replace_section(root, "□ 향후계획", [], report.followup)
 
-    # 🔹 향후계획 섹션의 ":" 앞/뒤 공백 정리 (앞 0칸, 뒤 1칸)
-    normalize_followup_colon_spacing(root)
+        normalize_followup_colon_spacing(root)
+
+    else:
+        # ── V2 템플릿(docheong_template2) 같이, 헤더가 일부만 있는 경우 ──
+        print("→ 섹션 헤더 일부 누락: 동적 재구성 모드로 처리")
+
+        paras = get_all_paras(root)
+
+        # 첫 번째 '□' 섹션 헤더와 그 다음 본문 문단을 템플릿으로 사용
+        first_section_idx = None
+        header_template = None
+        body_template = None
+
+        for i, p in enumerate(paras):
+            text = get_para_text(p)
+            if text and text.strip().startswith("□"):
+                first_section_idx = i
+                header_template = p
+                # 헤더 다음에서 본문용 템플릿 문단 찾기
+                for j in range(i + 1, min(i + 10, len(paras))):
+                    candidate = paras[j]
+                    cand_text = get_para_text(candidate)
+                    if cand_text and not cand_text.strip().startswith("□"):
+                        body_template = candidate
+                        break
+                break
+
+        if first_section_idx is None or body_template is None:
+            print("⚠️ 섹션 템플릿을 찾을 수 없어 본문 업데이트를 건너뜀")
+        else:
+            # 첫 번째 섹션 헤더 이후의 문단들을 모두 제거
+            removed_count = 0
+            for p in list(paras[first_section_idx:]):
+                parent = p.getparent()
+                if parent is not None:
+                    parent.remove(p)
+                    removed_count += 1
+            print(f"  ✓ 기존 섹션 제거: {removed_count}개 문단")
+
+            # 남아있는 문단 중 마지막 문단 뒤에 새 섹션들을 삽입
+            remaining_paras = get_all_paras(root)
+            insert_after = remaining_paras[-1] if remaining_paras else None
+
+            current_position = insert_after
+
+            def add_section(header: str, lines: List[str]):
+                nonlocal current_position
+                # 섹션 헤더 문단
+                header_para = create_section_header_para(header_template, header)
+                if current_position is None:
+                    # 문단이 하나도 없다면 root에 바로 추가
+                    root.append(header_para)
+                else:
+                    current_position.addnext(header_para)
+                current_position = header_para
+                print(f"  ✓ 섹션 생성: {header} ({len(lines)}개 항목)")
+
+                # 섹션 본문 문단들
+                for line in lines:
+                    content_para = create_content_para(body_template, line)
+                    current_position.addnext(content_para)
+                    current_position = content_para
+
+            add_section("□ 개요", report.overview)
+            add_section("□ 테스트 현황", report.test_status)
+            add_section("□ 주요이슈", report.key_issues)
+            add_section("□ 향후계획", report.followup)
+
+            normalize_followup_colon_spacing(root)
 
     # 저장
     Path(xml_output).parent.mkdir(parents=True, exist_ok=True)
@@ -448,9 +570,9 @@ def process_dynamic_report(json_path: str, xml_template: str, xml_output: str):
     root = tree.getroot()
     print(f"✓ 템플릿 로드: {Path(xml_template).name}\n")
 
-    # 날짜와 승인 테이블 수정
+    # ✅ 날짜와 제목 동시 업데이트 (V2 템플릿 대응)
     print("📝 헤더 수정 중...")
-    date_updated = update_header_date(root)
+    date_updated = update_header_date_and_title(root, title=report.title)
     table_removed = remove_approval_table_by_id(root)
 
     if not date_updated:
